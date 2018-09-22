@@ -9,6 +9,8 @@ from glob import glob
 from tqdm import tqdm
 
 
+COLLECTION_ASSERTS = 'ASSERTS'
+
 # Check TensorFlow Version
 from helper import gen_batch_function
 
@@ -48,9 +50,10 @@ def load_vgg(sess, vgg_path):
     l_out3 = graph.get_tensor_by_name(vgg_layer3_out_tensor_name)
     l_out4 = graph.get_tensor_by_name(vgg_layer4_out_tensor_name)
     l_out5 = graph.get_tensor_by_name(vgg_layer7_out_tensor_name)
+    l_out5 = tf.stop_gradient(l_out5)
 
     return l_input, l_keep, l_out3, l_out4, l_out5
-tests.test_load_vgg(load_vgg, tf)
+#tests.test_load_vgg(load_vgg, tf)
 
 
 def layers(vgg_layer3_out, vgg_layer4_out, vgg_layer7_out, num_classes):
@@ -63,18 +66,18 @@ def layers(vgg_layer3_out, vgg_layer4_out, vgg_layer7_out, num_classes):
     :return: The Tensor for the last layer of output
     """
 
-    l_1x1 = tf.layers.conv2d(vgg_layer7_out, num_classes, 1, 1, padding='same')
-    l_upsc_1 = tf.layers.conv2d_transpose(l_1x1, num_classes, 4, 2, padding='same', name='l_conv_1x1')
-    tf.Print(l_upsc_1, [tf.shape(l_upsc_1)])
+    regularizer = tf.contrib.layers.l2_regularizer(scale=0.1)
 
-    l_upsc_2 = tf.layers.conv2d_transpose(l_upsc_1, num_classes, 4, 2, padding='same')
-    l_upsc_3 = tf.layers.conv2d_transpose(l_upsc_2, num_classes, 16, 8, padding='same', name='l_ups_last')
-    tf.Print(l_upsc_3, [tf.shape(l_upsc_3)])
+    l_1x1 = tf.layers.conv2d(vgg_layer7_out, num_classes, 1, 1, padding='same')
+    l_upsc_1 = tf.layers.conv2d_transpose(l_1x1, num_classes, 4, 2, padding='same', name='l_conv_1x1', kernel_regularizer=regularizer)
+
+    l_upsc_2 = tf.layers.conv2d_transpose(l_upsc_1, num_classes, 4, 2, padding='same', kernel_regularizer=regularizer)
+    l_upsc_3 = tf.layers.conv2d_transpose(l_upsc_2, num_classes, 16, 8, padding='same', name='l_ups_last', kernel_regularizer=regularizer)
 
     #TODO: add skip connections and play with model structure
 
     return l_upsc_3
-tests.test_layers(layers)
+#tests.test_layers(layers)
 
 
 def optimize(nn_last_layer, correct_label, learning_rate, num_classes):
@@ -87,21 +90,33 @@ def optimize(nn_last_layer, correct_label, learning_rate, num_classes):
     :return: Tuple of (logits, train_op, cross_entropy_loss)
     """
 
-
     l_logits = tf.reshape(nn_last_layer, [-1, num_classes])
-    loss_cross_entropy = tf.nn.softmax_cross_entropy_with_logits(logits=l_logits, labels=correct_label)
-    # loss = tf.add(loss_cross_entropy, )
+    loss_cross_entropy = tf.nn.softmax_cross_entropy_with_logits(logits=nn_last_layer, labels=correct_label)
 
-#TODO: add L2 reg but first look at how train/test losss progresses
-    train_op = tf.train.AdamOptimizer(learning_rate).minimize(loss_cross_entropy)
+    tf.Print(loss_cross_entropy, [tf.losses.get_regularization_losses()], message="L2 losses: ")
+    loss = tf.add(tf.reduce_mean(loss_cross_entropy), sum(tf.losses.get_regularization_losses()))
 
-#TODO: for now logits are just the last layer unlike the walkthrough suggested way
-    return l_logits, train_op, loss_cross_entropy
-tests.test_optimize(optimize)
+    l_prediction_indexes = tf.argmax(tf.nn.softmax(l_logits), axis=1)
+    l_predictions = tf.one_hot(l_prediction_indexes, num_classes)  # convert last dimention to 1-hot
+
+    # tf.add_to_collection(COLLECTION_ASSERTS, tf.Print(l_predictions, [tf.shape(l_predictions)], message='Prediction 1-hot size: '))
+    # tf.add_to_collection(COLLECTION_ASSERTS, tf.assert_equal(tf.shape(l_predictions), [-1, 2], message="Predictions 1_hot shape: ", name="pred-1hot-size"))
+    tests._assert_tensor_shape(l_predictions, [None, 2], "Predictions 1_hot shape")
+
+    l_label_1_hot = tf.one_hot(tf.argmax(tf.reshape(correct_label, (-1, num_classes)), axis=1), num_classes)
+    # tf.add_to_collection(COLLECTION_ASSERTS, tf.Assert(l_label_1_hot.get_shape() == (-1, 3), data=["Labels 1-hot shape: "], name="label-1hot-size"))
+    tests._assert_tensor_shape(l_label_1_hot, [None, 2], "Labels 1_hot shape")
+
+    accuracy, accuracy_op = tf.metrics.mean_iou(l_label_1_hot, l_predictions, num_classes, name="accuracy_iou")
+
+    train_op = tf.train.AdamOptimizer(learning_rate).minimize(loss)
+
+    return l_logits, train_op, loss, accuracy, accuracy_op
+#tests.test_optimize(optimize)
 
 
 def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_loss, input_image,
-             correct_label, keep_prob, learning_rate, data_folder=''):
+             correct_label, keep_prob, learning_rate, data_folder='', accuracy=None, accuracy_update=None):
     """
     Train neural network and print out the loss during training.
     :param sess: TF Session
@@ -122,29 +137,43 @@ def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_l
     print("Started training")
     tf.global_variables_initializer().run()
     tf.local_variables_initializer().run()
-    print("Variables intialized")
 
-    for epoch in range(epochs):
-        batches_pbar = tqdm(total=batch_count, desc='Epoch {:>2}/{}'.format(epoch+1, epochs), unit=' batches')
+    run_vars = tf.get_collection(tf.GraphKeys.LOCAL_VARIABLES, scope='accuracy_iou')
+    acc_initializer = tf.variables_initializer(run_vars)
+    saver = tf.train.Saver()
+    print("Variables initialized")
 
-        for batch in get_batches_fn(batch_size):
-            hist = sess.run([train_op, cross_entropy_loss], feed_dict={input_image: batch[0], correct_label: batch[1], keep_prob: 0.5})
-            batches_pbar.update()
+    asserts = tf.get_collection(COLLECTION_ASSERTS)
+    with tf.control_dependencies(asserts) :
 
-        batches_pbar.close()
+        for epoch in range(epochs):
+            batches_pbar = tqdm(total=batch_count, desc='Epoch {:>2}/{}'.format(epoch+1, epochs), unit='batch')
+            acc_initializer.run()
+
+            for batch in get_batches_fn(batch_size):
+                hist = sess.run([train_op, cross_entropy_loss, accuracy_update], feed_dict={input_image: batch[0], correct_label: batch[1], keep_prob: 0.5})
+                batches_pbar.update()
+
+                batches_pbar.write("Loss={:.2f}".format(hist[1]))
+
+            accu = sess.run([accuracy])
+            print("Epoch ended. Loss={:.2f}, \n accuracy={:.2f}".format(hist[1], accu[0]))
+            batches_pbar.close()
+
+    # saver.save(sess, './runs/model.ckpt')
     pass
-tests.test_train_nn(train_nn)
+#tests.test_train_nn(train_nn)
 
 
 def run():
-    epochs = 1
+    epochs = 10
     batch_size = 20
-    learn_rate = 1e-3
+    learn_rate = 1e-2
 
     num_classes = 2
     image_shape = (160, 576)
     label_channels = 2
-    data_dir = './data'
+    data_dir = '/data'
     runs_dir = './runs'
     tests.test_for_kitti_dataset(data_dir)
 
@@ -156,6 +185,7 @@ def run():
     #  https://www.cityscapes-dataset.com/
 
     with tf.Session() as sess:
+
         # Path to vgg model
         vgg_path = os.path.join(data_dir, 'vgg')
         # Create function to get batches
@@ -169,9 +199,11 @@ def run():
         l_out = layers(l_out3, l_out4, l_out7, num_classes)
 
         l_label = tf.placeholder(tf.float32, (None, image_shape[0], image_shape[1], label_channels), name='Label')
-        l_logits, train_op, loss_op = optimize(l_out, l_label, learn_rate, num_classes)
+        l_logits, train_op, loss_op, accuracy, accuracy_op = optimize(l_out, l_label, learn_rate, num_classes)
 
-        train_nn(sess, epochs, batch_size, get_batches_fn, train_op, loss_op, l_input, l_label, l_keep, learn_rate, images_path)
+
+        train_nn(sess, epochs, batch_size, get_batches_fn, train_op, loss_op, l_input, l_label, l_keep,
+                 learn_rate, images_path, accuracy=accuracy, accuracy_update=accuracy_op)
 
         helper.save_inference_samples(runs_dir, data_dir, sess, image_shape, l_logits, l_keep, l_input)
 
