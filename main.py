@@ -69,12 +69,15 @@ def layers(vgg_layer3_out, vgg_layer4_out, vgg_layer7_out, num_classes):
     regularizer = tf.contrib.layers.l2_regularizer(scale=0.1)
 
     l_1x1 = tf.layers.conv2d(vgg_layer7_out, num_classes, 1, 1, padding='same')
-    l_upsc_1 = tf.layers.conv2d_transpose(l_1x1, num_classes, 4, 2, padding='same', name='l_conv_1x1', kernel_regularizer=regularizer)
+    l_upsc_1 = tf.layers.conv2d_transpose(l_1x1, 512, 4, 2, padding='same', name='l_conv_1x1', kernel_regularizer=regularizer)
 
-    l_upsc_2 = tf.layers.conv2d_transpose(l_upsc_1, num_classes, 4, 2, padding='same', kernel_regularizer=regularizer)
-    l_upsc_3 = tf.layers.conv2d_transpose(l_upsc_2, num_classes, 16, 8, padding='same', name='l_ups_last', kernel_regularizer=regularizer)
+    l_vgg_out4_scaled = tf.multiply(vgg_layer4_out, 1e-4)
+    l_4_skip = tf.add(l_upsc_1, l_vgg_out4_scaled)
+    l_upsc_2 = tf.layers.conv2d_transpose(l_4_skip, 256, 4, 2, padding='same', kernel_regularizer=regularizer)
 
-    #TODO: add skip connections and play with model structure
+    l_vgg_out3_scaled = tf.multiply(vgg_layer3_out, 1e-2)
+    l_3_skip = tf.add(l_upsc_2, l_vgg_out3_scaled)
+    l_upsc_3 = tf.layers.conv2d_transpose(l_3_skip, num_classes, 16, 8, padding='same', name='l_ups_last', kernel_regularizer=regularizer)
 
     return l_upsc_3
 #tests.test_layers(layers)
@@ -166,9 +169,9 @@ def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_l
 
 
 def run():
-    epochs = 10
+    epochs = 5
     batch_size = 20
-    learn_rate = 1e-2
+    learn_rate = 1e-3
 
     num_classes = 2
     image_shape = (160, 576)
@@ -200,7 +203,6 @@ def run():
 
         l_label = tf.placeholder(tf.float32, (None, image_shape[0], image_shape[1], label_channels), name='Label')
         l_logits, train_op, loss_op, accuracy, accuracy_op = optimize(l_out, l_label, learn_rate, num_classes)
-
 
         train_nn(sess, epochs, batch_size, get_batches_fn, train_op, loss_op, l_input, l_label, l_keep,
                  learn_rate, images_path, accuracy=accuracy, accuracy_update=accuracy_op)
