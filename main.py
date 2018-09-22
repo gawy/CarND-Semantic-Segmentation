@@ -68,8 +68,8 @@ def layers(vgg_layer3_out, vgg_layer4_out, vgg_layer7_out, num_classes):
 
     regularizer = tf.contrib.layers.l2_regularizer(scale=0.1)
 
-    l_1x1 = tf.layers.conv2d(vgg_layer7_out, num_classes, 1, 1, padding='same')
-    l_upsc_1 = tf.layers.conv2d_transpose(l_1x1, 512, 4, 2, padding='same', name='l_conv_1x1', kernel_regularizer=regularizer)
+    # l_1x1 = tf.layers.conv2d(vgg_layer7_out, num_classes, 1, 1, padding='same')
+    l_upsc_1 = tf.layers.conv2d_transpose(vgg_layer7_out, 512, 4, 2, padding='same', name='l_conv_1x1', kernel_regularizer=regularizer)
 
     l_vgg_out4_scaled = tf.multiply(vgg_layer4_out, 1e-4)
     l_4_skip = tf.add(l_upsc_1, l_vgg_out4_scaled)
