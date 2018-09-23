@@ -55,7 +55,7 @@ def load_vgg(sess, vgg_path):
     l_out5 = tf.stop_gradient(l_out5)
 
     return l_input, l_keep, l_out3, l_out4, l_out5
-#tests.test_load_vgg(load_vgg, tf)
+tests.test_load_vgg(load_vgg, tf)
 
 
 def layers(vgg_layer3_out, vgg_layer4_out, vgg_layer7_out, num_classes):
@@ -82,7 +82,7 @@ def layers(vgg_layer3_out, vgg_layer4_out, vgg_layer7_out, num_classes):
     l_upsc_3 = tf.layers.conv2d_transpose(l_3_skip, num_classes, 16, 8, padding='same', name='l_ups_last', kernel_regularizer=regularizer)
 
     return l_upsc_3
-#tests.test_layers(layers)
+tests.test_layers(layers)
 
 
 def optimize(nn_last_layer, correct_label, learning_rate, num_classes):
@@ -142,7 +142,7 @@ def optimize(nn_last_layer, correct_label, learning_rate, num_classes):
     tf.metrics.false_positives(gt_road, predict_road, name='metric_fp_road', metrics_collections=COLLECTION_METRICS, updates_collections=COLLECTION_METRICS_UPDATES)
 
     return l_logits, train_op, loss
-#tests.test_optimize(optimize)
+tests.test_optimize(optimize)
 tests.test_metrics(optimize)
 
 
@@ -202,14 +202,14 @@ def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_l
                 batches_pbar.write("Loss={:.2f}".format(hist[1]))
 
             iou, tp, fp, total_road, total_non_road = sess.run([metric_iou, metric_tp_road, metric_fp_road, metric_total_road, metric_total_non_road])
-            print("Epoch ended. Loss={:.2f}, iou={:.2f}, true-p={:.2f}, false-p={:.2f}, road={}, non_road={}"
-                  .format(hist[1], iou, tp/total_road, fp/total_non_road, total_road, total_non_road))
+            print("Epoch ended. Loss={:.2f}, iou={:.2f}, true-p={:.2f}, false-p={:.2f}"
+                  .format(hist[1], iou, tp/total_road, fp/total_non_road))  # , road={}, non_road={}  , total_road, total_non_road
             batches_pbar.close()
 
     saver = tf.train.Saver()
     saver.save(sess, './runs/model.ckpt')
     pass
-#tests.test_train_nn(train_nn)
+tests.test_train_nn(train_nn)
 
 
 def run():
