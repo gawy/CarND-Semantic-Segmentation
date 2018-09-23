@@ -10,6 +10,8 @@ from tqdm import tqdm
 
 
 COLLECTION_ASSERTS = 'ASSERTS'
+COLLECTION_METRICS = 'METRICS'
+COLLECTION_METRICS_UPDATES = 'METRICS_UPDATES'
 
 # Check TensorFlow Version
 from helper import gen_batch_function
@@ -99,27 +101,53 @@ def optimize(nn_last_layer, correct_label, learning_rate, num_classes):
     tf.Print(loss_cross_entropy, [tf.losses.get_regularization_losses()], message="L2 losses: ")
     loss = tf.add(tf.reduce_mean(loss_cross_entropy), sum(tf.losses.get_regularization_losses()))
 
-    l_prediction_indexes = tf.argmax(tf.nn.softmax(l_logits), axis=1)
-    l_predictions = tf.one_hot(l_prediction_indexes, num_classes)  # convert last dimention to 1-hot
+    train_op = tf.train.AdamOptimizer(learning_rate).minimize(loss)
 
-    # tf.add_to_collection(COLLECTION_ASSERTS, tf.Print(l_predictions, [tf.shape(l_predictions)], message='Prediction 1-hot size: '))
-    # tf.add_to_collection(COLLECTION_ASSERTS, tf.assert_equal(tf.shape(l_predictions), [-1, 2], message="Predictions 1_hot shape: ", name="pred-1hot-size"))
-    tests._assert_tensor_shape(l_predictions, [None, 2], "Predictions 1_hot shape")
+    # Accuracy metrics
+    l_prediction_indexes = tf.argmax(tf.nn.softmax(l_logits), axis=1)
+    l_predictions_1_hot = tf.one_hot(l_prediction_indexes, num_classes)  # convert last dimention to 1-hot
+
+    # tf.add_to_collection(COLLECTION_ASSERTS, tf.Print(l_predictions_1_hot, [tf.shape(l_predictions_1_hot)], message='Prediction 1-hot size: '))
+    # tf.add_to_collection(COLLECTION_ASSERTS, tf.assert_equal(tf.shape(l_predictions_1_hot), [-1, 2], message="Predictions 1_hot shape: ", name="pred-1hot-size"))
+    tests._assert_tensor_shape(l_predictions_1_hot, [None, 2], "Predictions 1_hot shape")
 
     l_label_1_hot = tf.one_hot(tf.argmax(tf.reshape(correct_label, (-1, num_classes)), axis=1), num_classes)
     # tf.add_to_collection(COLLECTION_ASSERTS, tf.Assert(l_label_1_hot.get_shape() == (-1, 3), data=["Labels 1-hot shape: "], name="label-1hot-size"))
     tests._assert_tensor_shape(l_label_1_hot, [None, 2], "Labels 1_hot shape")
 
-    accuracy, accuracy_op = tf.metrics.mean_iou(l_label_1_hot, l_predictions, num_classes, name="accuracy_iou")
+    # IOU
+    tf.metrics.mean_iou(l_label_1_hot, l_predictions_1_hot, num_classes, name="metric_iou",
+                                                metrics_collections=COLLECTION_METRICS, updates_collections=COLLECTION_METRICS_UPDATES)
 
-    train_op = tf.train.AdamOptimizer(learning_rate).minimize(loss)
+    # True positives of road surface. Non-road pixel will be masked
+    total_road = tf.Variable(lambda: 0.0, name='metric_total_road', trainable=False)
+    total_non_road = tf.Variable(lambda: 0.0, name='metric_total_non_road', trainable=False)
+    tf.add_to_collection(COLLECTION_METRICS, total_road)
+    tf.add_to_collection(COLLECTION_METRICS, total_non_road)
 
-    return l_logits, train_op, loss, accuracy, accuracy_op
+    gt_non_road, gt_road = tf.unstack(l_label_1_hot, axis=-1) #unpack along the last axis and we will have masks for road and non-road
+    total_road_update = tf.assign_add(total_road, tf.reduce_sum(gt_road))
+    total_non_road_update = tf.assign_add(total_non_road, tf.reduce_sum(gt_non_road))
+
+    tf.add_to_collection(COLLECTION_METRICS_UPDATES, total_road_update)
+    tf.add_to_collection(COLLECTION_METRICS_UPDATES, total_non_road_update)
+
+    _, predict_road = tf.unstack(l_predictions_1_hot, axis=-1) #predicted road as mask
+
+    # tf.metrics.precision(l_label_indexes, l_prediction_indexes, weights=mask_road)
+
+    #true-positives for road pixels
+    tf.metrics.true_positives(gt_road, predict_road, name='metric_tp_road', metrics_collections=COLLECTION_METRICS, updates_collections=COLLECTION_METRICS_UPDATES)
+    #false-positives out of non-road pixels
+    tf.metrics.false_positives(gt_road, predict_road, name='metric_fp_road', metrics_collections=COLLECTION_METRICS, updates_collections=COLLECTION_METRICS_UPDATES)
+
+    return l_logits, train_op, loss
 #tests.test_optimize(optimize)
+tests.test_metrics(optimize)
 
 
 def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_loss, input_image,
-             correct_label, keep_prob, learning_rate, data_folder='', accuracy=None, accuracy_update=None):
+             correct_label, keep_prob, learning_rate, data_folder=''):
     """
     Train neural network and print out the loss during training.
     :param sess: TF Session
@@ -141,35 +169,51 @@ def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_l
     tf.global_variables_initializer().run()
     tf.local_variables_initializer().run()
 
-    run_vars = tf.get_collection(tf.GraphKeys.LOCAL_VARIABLES, scope='accuracy_iou')
-    acc_initializer = tf.variables_initializer(run_vars)
-    saver = tf.train.Saver()
+    metrics_updates = tf.get_collection(COLLECTION_METRICS_UPDATES)
+    run_vars = tf.get_collection(tf.GraphKeys.LOCAL_VARIABLES, scope='metric_iou') \
+               + tf.get_collection(tf.GraphKeys.LOCAL_VARIABLES, scope='metric_tp_road') \
+               + tf.get_collection(tf.GraphKeys.LOCAL_VARIABLES, scope='metric_fp_road') \
+               + tf.get_collection(COLLECTION_METRICS, scope='metric_total_road') \
+               + tf.get_collection(COLLECTION_METRICS, scope='metric_total_non_road')
+
+    metrics_initializer = tf.variables_initializer(run_vars)
+
+    metric_iou = tf.get_collection(COLLECTION_METRICS, scope='metric_iou')[0]
+    metric_tp_road = tf.get_collection(COLLECTION_METRICS, scope='metric_tp_road')[0]
+    metric_fp_road = tf.get_collection(COLLECTION_METRICS, scope='metric_fp_road')[0]
+    metric_total_road = tf.get_collection(COLLECTION_METRICS, scope='metric_total_road')[0]
+    metric_total_non_road = tf.get_collection(COLLECTION_METRICS, scope='metric_total_non_road')[0]
+
     print("Variables initialized")
 
     asserts = tf.get_collection(COLLECTION_ASSERTS)
+
     with tf.control_dependencies(asserts) :
 
         for epoch in range(epochs):
             batches_pbar = tqdm(total=batch_count, desc='Epoch {:>2}/{}'.format(epoch+1, epochs), unit='batch')
-            acc_initializer.run()
+            metrics_initializer.run()
 
             for batch in get_batches_fn(batch_size):
-                hist = sess.run([train_op, cross_entropy_loss, accuracy_update], feed_dict={input_image: batch[0], correct_label: batch[1], keep_prob: 0.5})
+                fetches = [train_op, cross_entropy_loss] + metrics_updates
+                hist = sess.run(fetches, feed_dict={input_image: batch[0], correct_label: batch[1], keep_prob: 0.5})
                 batches_pbar.update()
 
                 batches_pbar.write("Loss={:.2f}".format(hist[1]))
 
-            accu = sess.run([accuracy])
-            print("Epoch ended. Loss={:.2f}, \n accuracy={:.2f}".format(hist[1], accu[0]))
+            iou, tp, fp, total_road, total_non_road = sess.run([metric_iou, metric_tp_road, metric_fp_road, metric_total_road, metric_total_non_road])
+            print("Epoch ended. Loss={:.2f}, iou={:.2f}, true-p={:.2f}, false-p={:.2f}, road={}, non_road={}"
+                  .format(hist[1], iou, tp/total_road, fp/total_non_road, total_road, total_non_road))
             batches_pbar.close()
 
-    # saver.save(sess, './runs/model.ckpt')
+    saver = tf.train.Saver()
+    saver.save(sess, './runs/model.ckpt')
     pass
 #tests.test_train_nn(train_nn)
 
 
 def run():
-    epochs = 5
+    epochs = 10
     batch_size = 20
     learn_rate = 1e-3
 
@@ -202,10 +246,10 @@ def run():
         l_out = layers(l_out3, l_out4, l_out7, num_classes)
 
         l_label = tf.placeholder(tf.float32, (None, image_shape[0], image_shape[1], label_channels), name='Label')
-        l_logits, train_op, loss_op, accuracy, accuracy_op = optimize(l_out, l_label, learn_rate, num_classes)
+        l_logits, train_op, loss_op = optimize(l_out, l_label, learn_rate, num_classes)
 
         train_nn(sess, epochs, batch_size, get_batches_fn, train_op, loss_op, l_input, l_label, l_keep,
-                 learn_rate, images_path, accuracy=accuracy, accuracy_update=accuracy_op)
+                 learn_rate, images_path)
 
         helper.save_inference_samples(runs_dir, data_dir, sess, image_shape, l_logits, l_keep, l_input)
 

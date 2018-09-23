@@ -7,6 +7,9 @@ from unittest import mock
 import numpy as np
 import tensorflow as tf
 
+COLLECTION_METRICS = 'METRICS'
+COLLECTION_METRICS_UPDATES = 'METRICS_UPDATES'
+
 
 def test_safe(func):
     """
@@ -98,7 +101,7 @@ def test_optimize(optimize):
     layers_output = tf.Variable(tf.zeros(shape))
     correct_label = tf.placeholder(tf.float32, [None, None, None, num_classes])
     learning_rate = tf.placeholder(tf.float32)
-    logits, train_op, cross_entropy_loss, _, _ = optimize(layers_output, correct_label, learning_rate, num_classes)
+    logits, train_op, cross_entropy_loss = optimize(layers_output, correct_label, learning_rate, num_classes)
 
     _assert_tensor_shape(logits, [2*3*4, num_classes], 'Logits')
 
@@ -108,6 +111,58 @@ def test_optimize(optimize):
         test, loss = sess.run([layers_output, cross_entropy_loss], {correct_label: np.arange(np.prod(shape)).reshape(shape)})
 
     assert test.min() != 0 or test.max() != 0, 'Training operation not changing weights.'
+
+
+@test_safe
+def test_metrics(optimize):
+
+    # [non-road, road] - order of indexes
+    labels = [[[[1.0,0.0], [0.0,1.0]],
+              [[1.0,0.0], [1.0,0.0]]]]
+    predictions = [[[[1.0,0.0], [1.0,0.0]],
+                   [[0.0,1.0], [1.0,0.0]]]]
+
+    road = 1.0
+    non_road = 3.0
+
+    num_classes = 2
+    # shape = [2, 3, 4, num_classes]
+    layers_output = tf.Variable(predictions)
+    correct_label = tf.placeholder(tf.float32, [None, None, None, num_classes])
+    learning_rate = tf.placeholder(tf.float32)
+    logits, train_op, cross_entropy_loss = optimize(layers_output, correct_label, learning_rate, num_classes)
+
+    _assert_tensor_shape(logits, [1*2*2, num_classes], 'Logits')
+
+    metrics_updates = tf.get_collection(COLLECTION_METRICS_UPDATES)
+    run_vars = tf.get_collection(tf.GraphKeys.LOCAL_VARIABLES, scope='metric_iou') \
+               + tf.get_collection(tf.GraphKeys.LOCAL_VARIABLES, scope='metric_tp_road') \
+               + tf.get_collection(tf.GraphKeys.LOCAL_VARIABLES, scope='metric_fp_road') \
+               + tf.get_collection(COLLECTION_METRICS, scope='metric_total_road') \
+               + tf.get_collection(COLLECTION_METRICS, scope='metric_total_non_road')
+    assert len(run_vars) == 5, 'Metric variables length is wrong'
+
+    metrics_initializer = tf.variables_initializer(run_vars)
+
+    metric_iou = tf.get_collection(COLLECTION_METRICS, scope='metric_iou')[0]
+    metric_tp_road = tf.get_collection(COLLECTION_METRICS, scope='metric_tp_road')[0]
+    metric_fp_road = tf.get_collection(COLLECTION_METRICS, scope='metric_fp_road')[0]
+    metric_total_road = tf.get_collection(COLLECTION_METRICS, scope='metric_total_road')[0]
+    metric_total_non_road = tf.get_collection(COLLECTION_METRICS, scope='metric_total_non_road')[0]
+
+    with tf.Session() as sess:
+        sess.run(tf.global_variables_initializer())
+        metrics_initializer.run()
+
+        sess.run([metrics_updates], {correct_label: labels, learning_rate: 10})
+        metrics_initializer.run()
+        sess.run([metrics_updates], {correct_label: labels, learning_rate: 10})
+        iou, tp, fp, total_road, total_non_road = sess.run([metric_iou, metric_tp_road, metric_fp_road, metric_total_road, metric_total_non_road])
+
+    assert total_road == road, 'Total road pixels do not match'
+    assert total_non_road == non_road, 'Total NON road pixels do not match'
+    assert tp == 0.0, 'True positives'
+    assert fp == 1.0, 'False positives'
 
 
 @test_safe
@@ -125,8 +180,6 @@ def test_train_nn(train_nn):
     correct_label = tf.placeholder(tf.float32, name='correct_label')
     keep_prob = tf.placeholder(tf.float32, name='keep_prob')
     learning_rate = tf.placeholder(tf.float32, name='learning_rate')
-    accuracy = tf.constant(1.0)
-    accuracy_op = tf.constant(0)
     with tf.Session() as sess:
         parameters = {
             'sess': sess,
@@ -138,9 +191,7 @@ def test_train_nn(train_nn):
             'input_image': input_image,
             'correct_label': correct_label,
             'keep_prob': keep_prob,
-            'learning_rate': learning_rate,
-            'accuracy': accuracy,
-            'accuracy_update': accuracy_op}
+            'learning_rate': learning_rate}
         _prevent_print(train_nn, parameters)
 
 
