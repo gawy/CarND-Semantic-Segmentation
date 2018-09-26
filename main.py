@@ -71,15 +71,23 @@ def layers(vgg_layer3_out, vgg_layer4_out, vgg_layer7_out, num_classes):
     regularizer = tf.contrib.layers.l2_regularizer(scale=0.1)
 
     # l_1x1 = tf.layers.conv2d(vgg_layer7_out, num_classes, 1, 1, padding='same')
-    l_upsc_1 = tf.layers.conv2d_transpose(vgg_layer7_out, 512, 4, 2, padding='same', name='l_conv_1x1', kernel_regularizer=regularizer)
+    l_upsc_1 = tf.layers.conv2d_transpose(vgg_layer7_out, 512, 4, 2, padding='same', name='l_conv_1x1',
+                                          kernel_regularizer=regularizer)
+    l_upsc_1_norm = tf.layers.batch_normalization(l_upsc_1)
+    l_upsc_1_relu = tf.nn.relu(l_upsc_1_norm)
 
     l_vgg_out4_scaled = tf.multiply(vgg_layer4_out, 1e-4)
-    l_4_skip = tf.add(l_upsc_1, l_vgg_out4_scaled)
-    l_upsc_2 = tf.layers.conv2d_transpose(l_4_skip, 256, 4, 2, padding='same', kernel_regularizer=regularizer)
+    l_4_skip = tf.add(l_upsc_1_relu, l_vgg_out4_scaled)
+    l_upsc_2 = tf.layers.conv2d_transpose(l_4_skip, 256, 4, 2, padding='same', kernel_regularizer=regularizer,
+                                          activation=None)
+
+    l_upsc_2_norm = tf.layers.batch_normalization(l_upsc_2)
+    l_upsc_2_relu = tf.nn.relu(l_upsc_2_norm)
 
     l_vgg_out3_scaled = tf.multiply(vgg_layer3_out, 1e-2)
-    l_3_skip = tf.add(l_upsc_2, l_vgg_out3_scaled)
-    l_upsc_3 = tf.layers.conv2d_transpose(l_3_skip, num_classes, 16, 8, padding='same', name='l_ups_last', kernel_regularizer=regularizer)
+    l_3_skip = tf.add(l_upsc_2_relu, l_vgg_out3_scaled)
+    l_upsc_3 = tf.layers.conv2d_transpose(l_3_skip, num_classes, 16, 8, padding='same', name='l_ups_last',
+                                          kernel_regularizer=regularizer)
 
     return l_upsc_3
 tests.test_layers(layers)
@@ -188,6 +196,8 @@ def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_l
 
     asserts = tf.get_collection(COLLECTION_ASSERTS)
 
+    loss_hist = []
+
     with tf.control_dependencies(asserts) :
 
         for epoch in range(epochs):
@@ -200,6 +210,7 @@ def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_l
                 batches_pbar.update()
 
                 batches_pbar.write("Loss={:.2f}".format(hist[1]))
+                loss_hist += hist[1]
 
             iou, tp, fp, total_road, total_non_road = sess.run([metric_iou, metric_tp_road, metric_fp_road, metric_total_road, metric_total_non_road])
             print("Epoch ended. Loss={:.2f}, iou={:.2f}, true-p={:.2f}, false-p={:.2f}"
